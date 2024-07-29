@@ -1,6 +1,8 @@
-use kvm_bindings::kvm_sev_cmd;
+use kvm_bindings::{kvm_memory_attributes, kvm_sev_cmd, KVMIO, KVM_MEMORY_ATTRIBUTE_PRIVATE};
 use kvm_ioctls::VmFd;
 use vmm_sys_util::errno;
+use vmm_sys_util::ioctl::ioctl_with_mut_ptr;
+use vmm_sys_util::{ioctl_ioc_nr, ioctl_iow_nr};
 
 use std::ffi::CStr;
 use std::os::fd::OwnedFd;
@@ -16,14 +18,39 @@ const KVM_SEV_SNP_LAUNCH_FINISH: u32 = 102;
 /// From SEV SNP Firmware ABI Specification, Revision 1.55, Table 67.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy)]
-pub enum SnpPageType {
+pub(crate) enum SnpPageType {
     /// A normal data page.
     Normal = 1,
 }
 
+ioctl_iow_nr!(
+    KVM_SET_MEMORY_ATTRIBUTES,
+    KVMIO,
+    0xd2,
+    kvm_memory_attributes
+);
+
+pub(crate) fn kvm_set_private_memory(vm: &VmFd, gpa: u64, size: u64) -> SnpResult<()> {
+    let mut attributes = kvm_memory_attributes {
+        address: gpa,
+        size: size,
+        attributes: KVM_MEMORY_ATTRIBUTE_PRIVATE as _,
+        ..Default::default()
+    };
+
+    unsafe {
+        let ret = ioctl_with_mut_ptr(vm, KVM_SET_MEMORY_ATTRIBUTES(), &mut attributes);
+        if ret == 0 {
+            Ok(())
+        } else {
+            Err(errno::Error::last())
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default)]
-pub struct KvmSevInit {
+pub(crate) struct KvmSevInit {
     pub vmsa_features: u64,
     pub flags: u32,
     pub ghcb_version: u16,
@@ -96,10 +123,10 @@ impl Snp {
         let mut sev_cmd = kvm_sev_cmd {
             id: KVM_SEV_INIT2,
             data: &mut init as *mut KvmSevInit as _,
-            error: 0,
             sev_fd: self.sev_fd.as_raw_fd() as _,
+            ..Default::default()
         };
-        vm.encrypt_op_sev(&mut sev_cmd)
+        unsafe { vm.encrypt_op(&mut sev_cmd) }
     }
 
     pub(crate) fn launch_start(&self, vm: &VmFd) -> SnpResult<()> {
@@ -112,39 +139,40 @@ impl Snp {
             0 << 18 |  // MIGRATE_MA
             1 << 19;
         let mut start: KvmSevSnpLaunchStart = KvmSevSnpLaunchStart {
-            policy, // See
+            policy,
             ..Default::default()
         };
         let mut sev_cmd = kvm_sev_cmd {
             id: KVM_SEV_SNP_LAUNCH_START,
             data: &mut start as *mut KvmSevSnpLaunchStart as _,
-            error: 0,
             sev_fd: self.sev_fd.as_raw_fd() as _,
+            ..Default::default()
         };
-        vm.encrypt_op_sev(&mut sev_cmd)
+        unsafe { vm.encrypt_op(&mut sev_cmd) }
     }
 
     pub(crate) fn launch_update(
         &self,
         vm: &VmFd,
-        range: &mut [u8],
+        host_va: u64,
+        size: u64,
         gpa: u64,
-        type_: SnpPageType,
+        page_type: SnpPageType,
     ) -> SnpResult<()> {
         let mut update = KvmSevSnpLaunchUpdate {
             gfn_start: gpa >> 12,
-            uaddr: range.as_mut_ptr() as _,
-            len: range.len() as _,
-            type_: type_ as _,
+            uaddr: host_va,
+            len: size,
+            type_: page_type as _,
             ..Default::default()
         };
         let mut sev_cmd = kvm_sev_cmd {
             id: KVM_SEV_SNP_LAUNCH_UPDATE,
             data: &mut update as *mut KvmSevSnpLaunchUpdate as _,
-            error: 0,
             sev_fd: self.sev_fd.as_raw_fd() as _,
+            ..Default::default()
         };
-        vm.encrypt_op_sev(&mut sev_cmd)
+        unsafe { vm.encrypt_op(&mut sev_cmd) }
     }
 
     pub(crate) fn launch_finish(&self, vm: &VmFd) -> SnpResult<()> {
@@ -152,9 +180,9 @@ impl Snp {
         let mut sev_cmd = kvm_sev_cmd {
             id: KVM_SEV_SNP_LAUNCH_FINISH,
             data: &mut finish as *mut KvmSevSnpLaunchFinish as _,
-            error: 0,
             sev_fd: self.sev_fd.as_raw_fd() as _,
+            ..Default::default()
         };
-        vm.encrypt_op_sev(&mut sev_cmd)
+        unsafe { vm.encrypt_op(&mut sev_cmd) }
     }
 }

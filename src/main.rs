@@ -4,7 +4,7 @@ use anyhow::bail;
 use kvm_bindings::{kvm_enc_region, kvm_userspace_memory_region};
 use kvm_ioctls::{Cap, Kvm, VcpuExit};
 use libc::c_void;
-use libc::{MAP_ANONYMOUS, MAP_FIXED, MAP_SHARED};
+use libc::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_SHARED};
 use libc::{PROT_READ, PROT_WRITE};
 
 const CODE: &[u8] = &[
@@ -16,7 +16,7 @@ const CODE: &[u8] = &[
     0xee,  /* out %al, (%dx) */
     0xf4,  /* hlt */
 ];
-const GUEST_MEMORY_SIZE: usize = 0x1000;
+const GUEST_MEMORY_SIZE: usize = 0x4000;
 const GUEST_MEMORY_BASE: u64 = 0x1000; // 16-bit real mode;
 
 // Runs a minimal "kernel" in 16-bit real mode.
@@ -26,7 +26,7 @@ fn main() -> anyhow::Result<()> {
     eprintln!("KVM version: {}", kvm.get_api_version());
 
     // Create VM
-    let vm = kvm.create_vm()?;
+    let vm = kvm.create_vm_with_type(0x4 /* KVM_X86_SNP_VM */)?;
     // Check extension
     if !vm.check_extension(Cap::UserMemory) {
         // We need this capability to load code into guest's mem.
@@ -35,21 +35,18 @@ fn main() -> anyhow::Result<()> {
 
     // Create per-VM SNP context
     let snp = crate::snp::Snp::new()?;
-    snp.init2(&vm)?;
-    eprintln!("0");
+    snp.init2(&vm)?; // FIXME: Invalid argument (os error 22)
 
     // KVM_SEV_SNP_LAUNCH_START
-    snp.launch_start(&vm)?;
-
-    eprintln!("1");
+    snp.launch_start(&vm)?; // FIXME: Inappropriate ioctl for device (os error 25)
 
     // KVM_SET_USER_MEMORY_REGION
-    let load_addr = unsafe {
+    let load_addr: *mut c_void = unsafe {
         libc::mmap(
             std::ptr::null_mut(),
             GUEST_MEMORY_SIZE,
             PROT_READ | PROT_WRITE,
-            MAP_SHARED | MAP_ANONYMOUS | MAP_FIXED,
+            MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE,
             -1,
             0,
         )
@@ -76,17 +73,28 @@ fn main() -> anyhow::Result<()> {
     };
     vm.register_enc_memory_region(&mem_region)?;
 
+    eprintln!("0");
+
+    // KVM_SET_MEMORY_ATTRIBUTES
+    crate::snp::kvm_set_private_memory(&vm, GUEST_MEMORY_BASE, GUEST_MEMORY_SIZE as _)?;
+
+    eprintln!("1");
+
     // KVM_SEV_SNP_LAUNCH_UPDATE
-    let range = unsafe { std::slice::from_raw_parts_mut(load_addr as _, GUEST_MEMORY_SIZE as _) };
+    eprintln!("2");
     snp.launch_update(
         &vm,
-        range,
-        GUEST_MEMORY_BASE as _,
+        load_addr as _,         // host_va
+        GUEST_MEMORY_SIZE as _, // size
+        GUEST_MEMORY_BASE as _, // gpa
         crate::snp::SnpPageType::Normal,
     )?;
 
+    eprintln!("3");
+
     // KVM_SEV_SNP_LAUNCH_FINISH
     snp.launch_finish(&vm)?;
+    eprintln!("4");
 
     // Create vCPU and set registers
     let mut vcpu = vm.create_vcpu(0)?;
