@@ -4,8 +4,7 @@ use std::os::fd::AsRawFd;
 
 use anyhow::bail;
 use kvm_bindings::{
-    kvm_create_guest_memfd, kvm_enc_region, kvm_memory_attributes, kvm_userspace_memory_region2,
-    KVM_MEMORY_ATTRIBUTE_PRIVATE, KVM_MEM_GUEST_MEMFD,
+    kvm_create_guest_memfd, kvm_enc_region, kvm_memory_attributes, kvm_sev_guest_status, kvm_userspace_memory_region2, KVM_MEMORY_ATTRIBUTE_PRIVATE, KVM_MEM_GUEST_MEMFD
 };
 use kvm_ioctls::{Cap, Kvm, VcpuExit};
 use libc::{c_void, MAP_ANONYMOUS, MAP_SHARED, PROT_EXEC, PROT_READ, PROT_WRITE};
@@ -66,6 +65,8 @@ fn main() -> anyhow::Result<()> {
     };
     let mem_fd = vm.create_guest_memfd(gmem)?;
 
+    eprintln!("1");
+
     // KVM_SET_USER_MEMORY_REGION2
     let slot = 0;
     let mem_region = kvm_userspace_memory_region2 {
@@ -80,12 +81,16 @@ fn main() -> anyhow::Result<()> {
     };
     unsafe { vm.set_user_memory_region2(mem_region)? };
 
-    // KVM_MEMORY_ENCRYPT_REG_REGION
+    eprintln!("2");
+
+    // KVM_MEMORY_ENCRYPT_REG_REGION - FIXME: is this opional? QEMU does not invoke this.
     let mem_region = kvm_enc_region {
         addr: hva as _,               // host_va
         size: GUEST_MEMORY_SIZE as _, // size
     };
     vm.register_enc_memory_region(&mem_region)?;
+
+    eprintln!("3");
 
     // KVM_SET_MEMORY_ATTRIBUTES
     let mem_attibutes = kvm_memory_attributes {
@@ -96,6 +101,8 @@ fn main() -> anyhow::Result<()> {
     };
     vm.set_memory_attributes(mem_attibutes)?;
 
+    eprintln!("4");
+
     // KVM_SEV_SNP_LAUNCH_UPDATE
     snp.launch_update(
         &vm,
@@ -104,6 +111,8 @@ fn main() -> anyhow::Result<()> {
         GUEST_MEMORY_BASE as _, // gpa
         0x1,                    //  KVM_SEV_SNP_PAGE_TYPE_NORMAL
     )?;
+
+    eprintln!("5");
 
     // KVM_SEV_SNP_LAUNCH_FINISH
     snp.launch_finish(&vm)?;
@@ -123,7 +132,16 @@ fn main() -> anyhow::Result<()> {
     vcpu_regs.rflags = 2;
     vcpu.set_regs(&vcpu_regs)?;
 
-    // 6) Run
+    eprintln!("6");
+
+    // Get guest status
+    let mut status = kvm_sev_guest_status::default();
+    snp.get_guest_status(&vm, &mut status)?;
+    eprintln!("Guest status: {:?}", status);
+
+    eprintln!("7");
+
+    // Run the loop
     for _ in 0..10 {
         match vcpu.run()? {
             VcpuExit::IoIn(addr, data) => {

@@ -1,4 +1,4 @@
-use kvm_bindings::kvm_sev_cmd;
+use kvm_bindings::{kvm_sev_cmd, kvm_sev_guest_status, sev_cmd_id_KVM_SEV_GUEST_STATUS};
 use kvm_ioctls::VmFd;
 use vmm_sys_util::errno;
 
@@ -91,7 +91,7 @@ impl Snp {
             sev_fd: self.sev_fd.as_raw_fd() as _,
             ..Default::default()
         };
-        unsafe { vm.encrypt_op(&mut sev_cmd) }
+        vm.encrypt_op_sev(&mut sev_cmd)
     }
 
     pub(crate) fn launch_start(&self, vm: &VmFd) -> SnpResult<()> {
@@ -113,7 +113,7 @@ impl Snp {
             sev_fd: self.sev_fd.as_raw_fd() as _,
             ..Default::default()
         };
-        unsafe { vm.encrypt_op(&mut sev_cmd) }
+        vm.encrypt_op_sev(&mut sev_cmd)
     }
 
     pub(crate) fn launch_update(
@@ -137,7 +137,7 @@ impl Snp {
             sev_fd: self.sev_fd.as_raw_fd() as _,
             ..Default::default()
         };
-        unsafe { vm.encrypt_op(&mut sev_cmd) }
+        vm.encrypt_op_sev(&mut sev_cmd)
     }
 
     pub(crate) fn launch_finish(&self, vm: &VmFd) -> SnpResult<()> {
@@ -148,6 +148,20 @@ impl Snp {
             sev_fd: self.sev_fd.as_raw_fd() as _,
             ..Default::default()
         };
-        unsafe { vm.encrypt_op(&mut sev_cmd) }
+        vm.encrypt_op_sev(&mut sev_cmd)
+    }
+
+    pub(crate) fn get_guest_status(
+        &self,
+        vm: &VmFd,
+        status: &mut kvm_sev_guest_status,
+    ) -> SnpResult<()> {
+        let mut sev_cmd = kvm_sev_cmd {
+            id: sev_cmd_id_KVM_SEV_GUEST_STATUS,
+            data: status as *mut kvm_sev_guest_status as _,
+            sev_fd: self.sev_fd.as_raw_fd() as _,
+            ..Default::default()
+        };
+        vm.encrypt_op_sev(&mut sev_cmd)
     }
 }
