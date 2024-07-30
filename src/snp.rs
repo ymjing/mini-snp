@@ -1,8 +1,6 @@
-use kvm_bindings::{kvm_memory_attributes, kvm_sev_cmd, KVMIO, KVM_MEMORY_ATTRIBUTE_PRIVATE};
+use kvm_bindings::kvm_sev_cmd;
 use kvm_ioctls::VmFd;
 use vmm_sys_util::errno;
-use vmm_sys_util::ioctl::ioctl_with_mut_ptr;
-use vmm_sys_util::{ioctl_ioc_nr, ioctl_iow_nr};
 
 use std::ffi::CStr;
 use std::os::fd::OwnedFd;
@@ -14,39 +12,6 @@ const KVM_SEV_INIT2: u32 = 22;
 const KVM_SEV_SNP_LAUNCH_START: u32 = 100;
 const KVM_SEV_SNP_LAUNCH_UPDATE: u32 = 101;
 const KVM_SEV_SNP_LAUNCH_FINISH: u32 = 102;
-
-/// From SEV SNP Firmware ABI Specification, Revision 1.55, Table 67.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum SnpPageType {
-    /// A normal data page.
-    Normal = 1,
-}
-
-ioctl_iow_nr!(
-    KVM_SET_MEMORY_ATTRIBUTES,
-    KVMIO,
-    0xd2,
-    kvm_memory_attributes
-);
-
-pub(crate) fn kvm_set_private_memory(vm: &VmFd, gpa: u64, size: u64) -> SnpResult<()> {
-    let mut attributes = kvm_memory_attributes {
-        address: gpa,
-        size: size,
-        attributes: KVM_MEMORY_ATTRIBUTE_PRIVATE as _,
-        ..Default::default()
-    };
-
-    unsafe {
-        let ret = ioctl_with_mut_ptr(vm, KVM_SET_MEMORY_ATTRIBUTES(), &mut attributes);
-        if ret == 0 {
-            Ok(())
-        } else {
-            Err(errno::Error::last())
-        }
-    }
-}
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default)]
@@ -157,13 +122,13 @@ impl Snp {
         host_va: u64,
         size: u64,
         gpa: u64,
-        page_type: SnpPageType,
+        page_type: u8,
     ) -> SnpResult<()> {
         let mut update = KvmSevSnpLaunchUpdate {
             gfn_start: gpa >> 12,
             uaddr: host_va,
             len: size,
-            type_: page_type as _,
+            type_: page_type,
             ..Default::default()
         };
         let mut sev_cmd = kvm_sev_cmd {

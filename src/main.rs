@@ -1,11 +1,14 @@
 mod snp;
 
+use std::os::fd::AsRawFd;
+
 use anyhow::bail;
-use kvm_bindings::{kvm_enc_region, kvm_userspace_memory_region};
+use kvm_bindings::{
+    kvm_create_guest_memfd, kvm_enc_region, kvm_memory_attributes, kvm_userspace_memory_region2,
+    KVM_MEMORY_ATTRIBUTE_PRIVATE, KVM_MEM_GUEST_MEMFD,
+};
 use kvm_ioctls::{Cap, Kvm, VcpuExit};
-use libc::c_void;
-use libc::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_SHARED};
-use libc::{PROT_READ, PROT_WRITE};
+use libc::{c_void, MAP_ANONYMOUS, MAP_SHARED, PROT_EXEC, PROT_READ, PROT_WRITE};
 
 const CODE: &[u8] = &[
     0xba, 0xf8, 0x03, /* mov $0x3f8, %dx */
@@ -35,66 +38,75 @@ fn main() -> anyhow::Result<()> {
 
     // Create per-VM SNP context
     let snp = crate::snp::Snp::new()?;
-    snp.init2(&vm)?; // FIXME: Invalid argument (os error 22)
+    snp.init2(&vm)?;
 
     // KVM_SEV_SNP_LAUNCH_START
-    snp.launch_start(&vm)?; // FIXME: Inappropriate ioctl for device (os error 25)
+    snp.launch_start(&vm)?;
 
-    // KVM_SET_USER_MEMORY_REGION
-    let load_addr: *mut c_void = unsafe {
+    // Allocate shared memory
+    let hva = unsafe {
         libc::mmap(
             std::ptr::null_mut(),
             GUEST_MEMORY_SIZE,
-            PROT_READ | PROT_WRITE,
-            MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE,
+            PROT_READ | PROT_WRITE | PROT_EXEC,
+            MAP_SHARED | MAP_ANONYMOUS,
             -1,
             0,
         )
     };
     unsafe {
-        libc::memset(load_addr, 0xcc, GUEST_MEMORY_SIZE);
-        libc::memcpy(load_addr, CODE.as_ptr() as *const c_void, CODE.len());
+        libc::memset(hva, 0xcc, GUEST_MEMORY_SIZE);
+        libc::memcpy(hva, CODE.as_ptr() as *const c_void, CODE.len());
     }
 
+    // KVM_CREATE_GUEST_MEMFD
+    let gmem = kvm_create_guest_memfd {
+        size: GUEST_MEMORY_SIZE as _,
+        ..Default::default()
+    };
+    let mem_fd = vm.create_guest_memfd(gmem)?;
+
+    // KVM_SET_USER_MEMORY_REGION2
     let slot = 0;
-    let mem_region = kvm_userspace_memory_region {
+    let mem_region = kvm_userspace_memory_region2 {
         slot,
         guest_phys_addr: GUEST_MEMORY_BASE,  // gpa
         memory_size: GUEST_MEMORY_SIZE as _, // size
-        userspace_addr: load_addr as _,      // host_va
-        flags: 0,
+        userspace_addr: hva as _,
+        guest_memfd: mem_fd.as_raw_fd() as _,
+        guest_memfd_offset: 0,
+        flags: KVM_MEM_GUEST_MEMFD,
+        ..Default::default()
     };
-    unsafe { vm.set_user_memory_region(mem_region)? };
+    unsafe { vm.set_user_memory_region2(mem_region)? };
 
     // KVM_MEMORY_ENCRYPT_REG_REGION
     let mem_region = kvm_enc_region {
-        addr: load_addr as _,         // host_va
+        addr: hva as _,               // host_va
         size: GUEST_MEMORY_SIZE as _, // size
     };
     vm.register_enc_memory_region(&mem_region)?;
 
-    eprintln!("0");
-
     // KVM_SET_MEMORY_ATTRIBUTES
-    crate::snp::kvm_set_private_memory(&vm, GUEST_MEMORY_BASE, GUEST_MEMORY_SIZE as _)?;
-
-    eprintln!("1");
+    let mem_attibutes = kvm_memory_attributes {
+        address: GUEST_MEMORY_BASE,
+        size: GUEST_MEMORY_SIZE as _,
+        attributes: KVM_MEMORY_ATTRIBUTE_PRIVATE as _,
+        ..Default::default()
+    };
+    vm.set_memory_attributes(mem_attibutes)?;
 
     // KVM_SEV_SNP_LAUNCH_UPDATE
-    eprintln!("2");
     snp.launch_update(
         &vm,
-        load_addr as _,         // host_va
+        hva as _,
         GUEST_MEMORY_SIZE as _, // size
         GUEST_MEMORY_BASE as _, // gpa
-        crate::snp::SnpPageType::Normal,
+        0x1,                    //  KVM_SEV_SNP_PAGE_TYPE_NORMAL
     )?;
-
-    eprintln!("3");
 
     // KVM_SEV_SNP_LAUNCH_FINISH
     snp.launch_finish(&vm)?;
-    eprintln!("4");
 
     // Create vCPU and set registers
     let mut vcpu = vm.create_vcpu(0)?;
