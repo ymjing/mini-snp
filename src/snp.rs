@@ -1,4 +1,4 @@
-use kvm_bindings::{kvm_sev_cmd, kvm_sev_guest_status, sev_cmd_id_KVM_SEV_GUEST_STATUS};
+use kvm_bindings::kvm_sev_cmd;
 use kvm_ioctls::VmFd;
 use vmm_sys_util::errno;
 
@@ -145,20 +145,6 @@ impl Snp {
         let mut sev_cmd = kvm_sev_cmd {
             id: KVM_SEV_SNP_LAUNCH_FINISH,
             data: &mut finish as *mut KvmSevSnpLaunchFinish as _,
-            sev_fd: self.sev_fd.as_raw_fd() as _,
-            ..Default::default()
-        };
-        vm.encrypt_op_sev(&mut sev_cmd)
-    }
-
-    pub(crate) fn _get_guest_status(
-        &self,
-        vm: &VmFd,
-        status: &mut kvm_sev_guest_status,
-    ) -> Result<()> {
-        let mut sev_cmd = kvm_sev_cmd {
-            id: sev_cmd_id_KVM_SEV_GUEST_STATUS,
-            data: status as *mut kvm_sev_guest_status as _,
             sev_fd: self.sev_fd.as_raw_fd() as _,
             ..Default::default()
         };

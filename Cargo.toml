@@ -11,4 +11,3 @@ kvm-bindings = "0.9.0"
 kvm-ioctls = { git = "https://github.com/rust-vmm/kvm-ioctls", rev = "refs/pull/264/head"}
 libc = "0.2.155"
 vmm-sys-util = "0.12.1"
-zerocopy = { version = "0.7.32", features = ["derive", "alloc"] }
