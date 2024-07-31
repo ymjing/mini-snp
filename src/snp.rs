@@ -6,7 +6,7 @@ use std::ffi::CStr;
 use std::os::fd::OwnedFd;
 use std::os::fd::{AsRawFd, FromRawFd};
 
-pub(crate) type SnpResult<T> = std::result::Result<T, errno::Error>;
+pub(crate) type Result<T> = std::result::Result<T, errno::Error>;
 
 const KVM_SEV_INIT2: u32 = 22;
 const KVM_SEV_SNP_LAUNCH_START: u32 = 100;
@@ -66,7 +66,7 @@ pub struct Snp {
 }
 
 impl Snp {
-    pub(crate) fn new() -> SnpResult<Self> {
+    pub(crate) fn new() -> Result<Self> {
         let sev_path = unsafe { CStr::from_bytes_with_nul_unchecked(b"/dev/sev\0") };
         let open_flags = libc::O_RDWR | libc::O_CLOEXEC;
         let fd = unsafe {
@@ -83,7 +83,7 @@ impl Snp {
         }
     }
 
-    pub(crate) fn init2(&self, vm: &VmFd) -> SnpResult<()> {
+    pub(crate) fn init2(&self, vm: &VmFd) -> Result<()> {
         let mut init = KvmSevInit::default();
         let mut sev_cmd = kvm_sev_cmd {
             id: KVM_SEV_INIT2,
@@ -94,7 +94,7 @@ impl Snp {
         vm.encrypt_op_sev(&mut sev_cmd)
     }
 
-    pub(crate) fn launch_start(&self, vm: &VmFd) -> SnpResult<()> {
+    pub(crate) fn launch_start(&self, vm: &VmFd) -> Result<()> {
         // See AMD Spec Section 4.3 - Guest Policy
         // Bit 17 is reserved and has to be one.
         let policy: u64 = 0 |  // minor
@@ -123,7 +123,7 @@ impl Snp {
         size: u64,
         gpa: u64,
         page_type: u8,
-    ) -> SnpResult<()> {
+    ) -> Result<()> {
         let mut update = KvmSevSnpLaunchUpdate {
             gfn_start: gpa >> 12,
             uaddr: host_va,
@@ -140,7 +140,7 @@ impl Snp {
         vm.encrypt_op_sev(&mut sev_cmd)
     }
 
-    pub(crate) fn launch_finish(&self, vm: &VmFd) -> SnpResult<()> {
+    pub(crate) fn launch_finish(&self, vm: &VmFd) -> Result<()> {
         let mut finish = KvmSevSnpLaunchFinish::default();
         let mut sev_cmd = kvm_sev_cmd {
             id: KVM_SEV_SNP_LAUNCH_FINISH,
@@ -155,7 +155,7 @@ impl Snp {
         &self,
         vm: &VmFd,
         status: &mut kvm_sev_guest_status,
-    ) -> SnpResult<()> {
+    ) -> Result<()> {
         let mut sev_cmd = kvm_sev_cmd {
             id: sev_cmd_id_KVM_SEV_GUEST_STATUS,
             data: status as *mut kvm_sev_guest_status as _,

@@ -1,3 +1,4 @@
+mod cpuid;
 mod snp;
 
 use std::os::fd::AsRawFd;
@@ -5,11 +6,13 @@ use std::os::fd::AsRawFd;
 use anyhow::bail;
 use kvm_bindings::{
     kvm_create_guest_memfd, kvm_enc_region, kvm_memory_attributes, kvm_sev_guest_status,
-    kvm_userspace_memory_region2, KVM_MEMORY_ATTRIBUTE_PRIVATE, KVM_MEM_GUEST_MEMFD,
+    kvm_userspace_memory_region2, KVM_MAX_CPUID_ENTRIES, KVM_MEMORY_ATTRIBUTE_PRIVATE,
+    KVM_MEM_GUEST_MEMFD,
 };
 use kvm_ioctls::{Cap, Kvm, VcpuExit, VmFd};
 use libc::{c_void, MAP_ANONYMOUS, MAP_SHARED, PROT_EXEC, PROT_READ, PROT_WRITE};
 
+use crate::cpuid::populate_cpuid_page;
 use crate::snp::Snp;
 
 const KVM_SEV_SNP_PAGE_TYPE_NORMAL: u8 = 0x1;
@@ -26,14 +29,14 @@ const CODE: &[u8] = &[
     0xf4,  /* hlt */
 ];
 
-const CPUID_MEMORY_BASE: u64 = 0x1000;
+const CODE_MEMORY_BASE: u64 = 0x1000;
+const CODE_MEMORY_SIZE: usize = 0x1000;
+
+const CPUID_MEMORY_BASE: u64 = 0x2000;
 const CPUID_MEMORY_SIZE: usize = 0x1000;
 
-const SECRET_MEMORY_BASE: u64 = 0x2000;
+const SECRET_MEMORY_BASE: u64 = 0x3000;
 const SECRET_MEMORY_SIZE: usize = 0x1000;
-
-const CODE_MEMORY_BASE: u64 = 0x3000;
-const CODE_MEMORY_SIZE: usize = 0x1000;
 
 fn map_memory(
     vm: &VmFd,
@@ -60,6 +63,8 @@ fn map_memory(
             libc::memset(hva, 0xcc, CODE_MEMORY_SIZE);
             libc::memcpy(hva, CODE.as_ptr() as *const c_void, CODE.len());
         }
+    } else if page_type == KVM_SEV_SNP_PAGE_TYPE_CPUID {
+        populate_cpuid_page(vm, hva, size)?;
     }
 
     // KVM_CREATE_GUEST_MEMFD
@@ -139,12 +144,24 @@ fn main() -> anyhow::Result<()> {
     // KVM_SEV_SNP_LAUNCH_START
     snp.launch_start(&vm)?;
 
+    // Map shared memory for CODE
+    eprintln!("Mapping NORMAL page");
+    map_memory(
+        &vm,
+        &snp,
+        0,
+        CODE_MEMORY_BASE,
+        CODE_MEMORY_SIZE,
+        KVM_SEV_SNP_PAGE_TYPE_NORMAL,
+    )?;
+    eprintln!("Mapping NORMAL page - done");
+
     // Map shared memory for CPUID
     eprintln!("Mapping CPUID page");
     map_memory(
         &vm,
         &snp,
-        0,
+        1,
         CPUID_MEMORY_BASE,
         CPUID_MEMORY_SIZE,
         KVM_SEV_SNP_PAGE_TYPE_CPUID,
@@ -156,31 +173,29 @@ fn main() -> anyhow::Result<()> {
     map_memory(
         &vm,
         &snp,
-        1,
+        2,
         SECRET_MEMORY_BASE,
         SECRET_MEMORY_SIZE,
         KVM_SEV_SNP_PAGE_TYPE_SECRETS,
     )?;
     eprintln!("Mapping SECRETS page - done");
 
-    // Map shared memory for CODE
-    eprintln!("Mapping NORMAL page");
-    map_memory(
-        &vm,
-        &snp,
-        2,
-        CODE_MEMORY_BASE,
-        CODE_MEMORY_SIZE,
-        KVM_SEV_SNP_PAGE_TYPE_NORMAL,
-    )?;
-    eprintln!("Mapping NORMAL page - done");
-
-    // KVM_SEV_SNP_LAUNCH_FINISH
-    snp.launch_finish(&vm)?;
-
-    // Create vCPU and set registers
+    // Create vCPU
+    let id = 0;
     let mut vcpu = vm.create_vcpu(0)?;
 
+    let mut cpu_entries = vcpu.get_cpuid2(KVM_MAX_CPUID_ENTRIES)?;
+    for cpuid in cpu_entries.as_mut_slice().iter_mut() {
+        if cpuid.function == 0x1 {
+            cpuid.ebx &= 0x00ff_ffff;
+            cpuid.ebx |= id << 24;
+        } else if cpuid.function == 0xb {
+            cpuid.edx = id;
+        }
+    }
+    vcpu.set_cpuid2(&cpu_entries)?;
+
+    // Set vCPU registers
     let mut vcpu_sregs = vcpu.get_sregs()?;
     vcpu_sregs.cs.base = 0;
     vcpu_sregs.cs.selector = 0;
@@ -189,22 +204,28 @@ fn main() -> anyhow::Result<()> {
     let mut vcpu_regs = vcpu.get_regs()?;
     vcpu_regs.rip = CODE_MEMORY_BASE;
     vcpu_regs.rax = 2;
-    vcpu_regs.rbx = 3;
+    vcpu_regs.rbx = 2;
     vcpu_regs.rflags = 2;
     vcpu.set_regs(&vcpu_regs)?;
+
+    // KVM_SEV_SNP_LAUNCH_FINISH
+    snp.launch_finish(&vm)?; // this should be after vCPU set_regs
 
     eprintln!("6");
 
     // Get guest status
-    let mut status = kvm_sev_guest_status::default();
-    snp.get_guest_status(&vm, &mut status)?;
-    eprintln!("Guest status: {:?}", status);
+    //let mut status = kvm_sev_guest_status::default();
+    //snp.get_guest_status(&vm, &mut status)?;
+    //eprintln!("Guest status: {:?}", status);
 
     eprintln!("7");
 
     // Run the loop
     for _ in 0..10 {
-        match vcpu.run()? {
+        eprintln!("8");
+        let ret = vcpu.run()?;
+        eprintln!("9");
+        match ret {
             VcpuExit::IoIn(addr, data) => {
                 eprintln!(
                     "Received an I/O in exit. Address: {:#x}. Data: {:#x}",
