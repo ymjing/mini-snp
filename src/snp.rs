@@ -151,7 +151,7 @@ impl Snp {
         vm.encrypt_op_sev(&mut sev_cmd)
     }
 
-    pub(crate) fn get_guest_status(
+    pub(crate) fn _get_guest_status(
         &self,
         vm: &VmFd,
         status: &mut kvm_sev_guest_status,

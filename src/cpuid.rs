@@ -1,7 +1,7 @@
 use std::iter::zip;
 
 use kvm_bindings::{kvm_cpuid2, KVM_MAX_CPUID_ENTRIES};
-use kvm_ioctls::VmFd;
+use kvm_ioctls::VcpuFd;
 use libc::c_void;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
@@ -28,12 +28,15 @@ pub struct SnpCpuidFunc {
     pub reserved: u64,
 }
 
-pub(crate) fn populate_cpuid_page(vm: &VmFd, hva: *mut c_void, size: usize) -> anyhow::Result<()> {
+pub(crate) fn populate_cpuid_page(
+    vcpu: &VcpuFd,
+    hva: *mut c_void,
+    size: usize,
+) -> anyhow::Result<()> {
     let mut cpuid_table = SnpCpuidInfo::new_zeroed();
 
     assert!(size > size_of::<SnpCpuidInfo>());
 
-    let vcpu = vm.create_vcpu(2)?;
     let cpu_entries: vmm_sys_util::fam::FamStructWrapper<kvm_cpuid2> =
         vcpu.get_cpuid2(KVM_MAX_CPUID_ENTRIES)?;
 
